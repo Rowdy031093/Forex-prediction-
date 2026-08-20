@@ -126,3 +126,90 @@ The architecture is modular on purpose so you can layer on:
 - Multi-timeframe technical confirmation (e.g. daily bias + 4H entry structure)
 - Backtesting the conviction score against historical pair performance
 - Alerting when a pair crosses a conviction threshold
+
+## What's in the app now (Group A additions)
+
+**Original (unchanged):** currency strength ranking, pair cross-reference, clearest structure.
+
+**New:**
+- **Daily Market Analysis** — per-pair report: direction bias, technical/fundamental summaries, 1H + daily market structure, support/resistance levels, bullish/bearish scenarios, key levels, overall trade bias.
+- **1H structure alignment** — compares fundamental bias, technical bias, and 1-hour market structure. Rates each pair HIGH (all agree), PARTIAL (2 of 3), or CONFLICT (no majority, or the 1H structure just broke) — with an explicit warning when the 1H structure is against your bias or has just invalidated it.
+- **Session Times** — best/quietest trading hours per pair, computed from that pair's actual recent hourly volatility (not fixed textbook hours), converted to your selected timezone, with session-overlap detection.
+- **Setup Scores** — A+/A/B/C/No Trade grade per pair, combining alignment + technical/fundamental conviction + session liquidity + proximity to a key level, with a transparent point-by-point breakdown of why it got that grade.
+- **News events** — optional, via a free Finnhub API key in the sidebar. Economic-calendar access on free tiers is inconsistent across providers, so this is best-effort: if unavailable, that section just stays empty rather than breaking anything.
+
+**All of this is informational analysis, not trade advice** — every report includes that disclaimer.
+
+## Not yet built (next phase)
+
+Trading calendar, performance dashboard, and trade journal need real persistent storage — Streamlit Community Cloud's free tier doesn't reliably keep data between restarts. That's a separate setup step (a free database) before those get added.
+
+## Group B: Trade Journal, Calendar, Performance Dashboard
+
+Three new tabs, backed by a free Supabase database (so your trade history survives app restarts/redeploys):
+
+- **Trade Journal** — log every trade's full detail (entry/SL/TP, reasoning, 1H structure at entry, whether everything was aligned, screenshot link, notes). View/delete recent trades.
+- **Calendar** — month grid, color-coded green/red/gray by that day's net P/L, tap "view" under any day to see its trades.
+- **Performance Dashboard** — win rate, profit factor, streaks, best/worst day, daily/weekly/monthly P/L charts, CSV export.
+
+All three read from and write to a single `trades` table — the calendar and dashboard are just different views of your journal, computed live, so they can never drift out of sync with each other.
+
+### One-time setup (already done if you followed along live)
+
+1. Create a free [Supabase](https://supabase.com) project.
+2. In the SQL Editor, run:
+```sql
+create table trades (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz default now(),
+  trade_date date not null,
+  pair text not null,
+  direction text,
+  entry_price numeric,
+  stop_loss numeric,
+  take_profit numeric,
+  position_size numeric,
+  risk_percent numeric,
+  result text,
+  pl_amount numeric,
+  risk_reward numeric,
+  reason_for_entry text,
+  technical_setup text,
+  fundamental_reasoning text,
+  structure_1h_at_entry text,
+  aligned boolean,
+  screenshot_url text,
+  notes text
+);
+
+alter table trades enable row level security;
+
+create policy "allow all" on trades
+  for all
+  using (true)
+  with check (true);
+```
+3. Get your **Project URL** and **Publishable key** (Settings → API Keys — Supabase renamed the old "anon key" to "publishable key" in 2026; same purpose).
+
+### Connecting the app securely (important)
+
+**Never put your Supabase URL/key directly in code that goes to GitHub** — your repo is public, and anyone could read and write to your trade data.
+
+Instead, set them as **Streamlit Cloud secrets**:
+
+1. Go to your app on [share.streamlit.io](https://share.streamlit.io)
+2. Open your app's settings (⋮ menu → **Settings**, or **Manage app**)
+3. Go to the **Secrets** section
+4. Paste:
+```toml
+[supabase]
+url = "https://your-project-ref.supabase.co"
+key = "sb_publishable_xxxxxxxxxxxx"
+```
+5. Save — the app redeploys automatically and picks these up via `db_config.py`
+
+If secrets aren't set yet, the app falls back to letting you type the URL/key directly into the sidebar for that session only (handy for testing, but you'll have to re-enter them every visit until secrets are configured).
+
+### Note on the RLS policy
+
+The `create policy "allow all"` step makes the table open to anyone holding your URL + publishable key. That's fine for a single-user personal app like this one, but it means: don't share those credentials publicly, and don't rely on this for multi-user use without adding real authentication.
