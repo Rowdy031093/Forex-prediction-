@@ -7,15 +7,15 @@ Launch with:  streamlit run app.py
 (or just double-click run_app.command / run_app.bat)
 
 This is a UI wrapper only -- all the actual scoring logic lives in
-fundamental.py, technical.py, data_feed.py, fred_fetch.py, daily_analysis.py,
-performance.py, journal_db.py, unchanged from the underlying modules, so
-nothing about how numbers are computed is different here.
+fundamental.py, technical.py, data_feed.py, fred_fetch.py, performance.py,
+journal_db.py, unchanged from the underlying modules, so nothing about
+how numbers are computed is different here.
 """
 
 import os
 import calendar as pycal
 import tempfile
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -24,8 +24,6 @@ from fundamental import load_fundamental_data, compute_currency_strength, WEIGHT
 from technical import compute_technical_signals
 from data_feed import get_ohlc, generate_synthetic_ohlc
 from engine import default_pairs
-from daily_analysis import build_daily_analysis
-from news_events import fetch_upcoming_events
 from db_config import get_journal_db
 from performance import compute_dashboard, daily_pl
 import fred_fetch
@@ -46,7 +44,7 @@ if "cal_selected_day" not in st.session_state:
     st.session_state.cal_selected_day = None
 
 st.title("Forex: Fundamental x Technical Cross-Reference")
-st.caption("Screening tool for idea generation -- not a signal advice. "
+st.caption("Screening tool for idea generation -- not a signal generator. "
            "See the README for the full list of limitations.")
 
 # ------------------------------------------------------------------
@@ -92,17 +90,6 @@ with st.sidebar:
     auto_pairs = default_pairs(currencies_available)
     pairs_text = st.text_area("Pairs (comma-separated)", value=",".join(auto_pairs), height=80)
 
-    st.divider()
-    st.header("4. Daily analysis settings")
-    COMMON_TIMEZONES = ["UTC", "America/New_York", "America/Chicago", "America/Los_Angeles",
-                         "Europe/London", "Europe/Berlin", "Asia/Tokyo", "Asia/Singapore",
-                         "Australia/Sydney", "Pacific/Auckland"]
-    tz_name = st.selectbox("Your timezone (for session hours)", COMMON_TIMEZONES, index=0)
-    finnhub_key = st.text_input("Finnhub API key (optional -- for news events)", type="password",
-                                 value=os.environ.get("FINNHUB_API_KEY", ""),
-                                 help="Free key at finnhub.io. Economic calendar access varies by plan; "
-                                      "if unavailable, news events are simply left blank.")
-
     journal_db, journal_status = get_journal_db()
 
 # ------------------------------------------------------------------
@@ -113,7 +100,7 @@ nav_screening, nav_journal, nav_calendar, nav_dashboard = st.tabs(
 )
 
 # ==================================================================
-# TAB 1: MARKET SCREENING (all original + Group A functionality)
+# TAB 1: MARKET SCREENING (fundamental x technical cross-reference)
 # ==================================================================
 with nav_screening:
     st.subheader("Fundamental data (editable)")
@@ -155,7 +142,6 @@ with nav_screening:
             norm_strength = strength["CompositeScore"] / max_abs
 
             rows = []
-            daily_reports = {}
             progress = st.progress(0.0, text="Evaluating pairs...")
             for i, pair in enumerate(pairs):
                 base, quote = pair[:3], pair[3:]
@@ -168,10 +154,8 @@ with nav_screening:
                     if use_synthetic:
                         seed = abs(hash(pair)) % (2**32)
                         ohlc = generate_synthetic_ohlc(n=220, seed=seed)
-                        hourly_ohlc = generate_synthetic_ohlc(n=300, seed=seed + 1, freq="h")
                     else:
                         ohlc = get_ohlc(pair, period=period, interval=interval)
-                        hourly_ohlc = get_ohlc(pair, period="10d", interval="1h")
                     tech = compute_technical_signals(ohlc)
                 except Exception as e:
                     st.warning(f"Skipping {pair}: price data error ({e})")
@@ -193,27 +177,14 @@ with nav_screening:
                     "RSI14": tech["RSI14"],
                 })
 
-                try:
-                    daily_reports[pair] = build_daily_analysis(
-                        pair, fundamental_bias=fundamental_bias,
-                        daily_ohlc=ohlc, hourly_ohlc=hourly_ohlc, tz_name=tz_name,
-                    )
-                except Exception as e:
-                    st.warning(f"Daily analysis skipped for {pair}: {e}")
-
                 progress.progress((i + 1) / max(len(pairs), 1), text=f"Evaluated {pair}")
 
             progress.empty()
-
-            currencies_in_pairs = sorted(set(p[:3] for p in pairs) | set(p[3:] for p in pairs))
-            news = fetch_upcoming_events(finnhub_key, currencies_in_pairs) if finnhub_key else []
 
             st.session_state.results = {
                 "strength": strength,
                 "pairs": pd.DataFrame(rows).sort_values("ConvictionScore", ascending=False).reset_index(drop=True)
                 if rows else pd.DataFrame(),
-                "daily_reports": daily_reports,
-                "news": news,
             }
         finally:
             os.unlink(tmp_path)
@@ -221,13 +192,8 @@ with nav_screening:
     if st.session_state.results is not None:
         strength = st.session_state.results["strength"]
         pairs_df = st.session_state.results["pairs"]
-        daily_reports = st.session_state.results.get("daily_reports", {})
-        news = st.session_state.results.get("news", [])
 
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-            "Currency Strength", "Pair Cross-Reference", "Clearest Structure",
-            "Daily Market Analysis", "Session Times", "Setup Scores",
-        ])
+        tab1, tab2, tab3 = st.tabs(["Currency Strength", "Pair Cross-Reference", "Clearest Structure"])
 
         with tab1:
             st.bar_chart(strength["CompositeScore"])
@@ -257,92 +223,6 @@ with nav_screening:
                         value=f"Conviction {r['ConvictionScore']:.2f}",
                         delta=f"structure: {r['Structure']}",
                     )
-
-        with tab4:
-            st.caption("Informational analysis only -- not a trade recommendation and does not guarantee results.")
-            if not daily_reports:
-                st.info("No daily analysis available -- run the analysis above first.")
-            else:
-                pick = st.selectbox("Pair", list(daily_reports.keys()), key="daily_analysis_pick")
-                r = daily_reports[pick]
-
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Direction Bias", r["DirectionBias"])
-                c2.metric("Alignment", r["Alignment"]["Alignment"])
-                c3.metric("Setup Grade", r["SetupGrade"]["Grade"])
-
-                if r["Alignment"]["Warning"]:
-                    st.warning(r["Alignment"]["Warning"])
-
-                colA, colB = st.columns(2)
-                with colA:
-                    st.markdown("**Technical Analysis**")
-                    st.write(r["TechnicalAnalysis"])
-                    st.markdown("**1H Market Structure**")
-                    st.write(r["MarketStructure1H"])
-                with colB:
-                    st.markdown("**Fundamental Analysis**")
-                    st.write(r["FundamentalAnalysis"])
-                    st.markdown("**Support / Resistance**")
-                    st.write(r["SupportResistance"])
-
-                st.markdown("**Scenarios**")
-                st.write(f"Bullish: {r['Scenarios']['bullish_scenario']}")
-                st.write(f"Bearish: {r['Scenarios']['bearish_scenario']}")
-
-                st.markdown("**Key Levels to Watch**")
-                st.write(r["KeyLevelsToWatch"])
-
-                st.markdown("**Overall Trade Bias**")
-                st.info(r["OverallTradeBias"])
-
-                if r["NewsEvents"]:
-                    st.markdown("**Upcoming Economic Events**")
-                    st.dataframe(pd.DataFrame(r["NewsEvents"]), use_container_width=True)
-                else:
-                    st.caption("No automated news events available (add a Finnhub key in the sidebar, "
-                               "or note events manually) -- add manually if relevant for this pair.")
-
-                st.caption(r["Disclaimer"])
-
-        with tab5:
-            if not daily_reports:
-                st.info("No session data available -- run the analysis above first.")
-            else:
-                session_rows = []
-                for pair, r in daily_reports.items():
-                    s = r["Session"]
-                    session_rows.append({
-                        "Pair": pair,
-                        "Primary Session(s)": ", ".join(s["primary_sessions"]),
-                        "Active Now": ", ".join(s["active_sessions_now"]) or "None",
-                        "Overlap Now": ", ".join(s["active_overlaps_now"]) or "None",
-                        "Status": s["current_status"],
-                        "Best Hours (local)": s.get("best_hours_local", s.get("best_hours_utc", "n/a")),
-                        "Quietest Hours (local)": s.get("quietest_hours_local", s.get("quietest_hours_utc", "n/a")),
-                    })
-                st.dataframe(pd.DataFrame(session_rows), use_container_width=True)
-                st.caption("Best/quietest hours are computed from actual recent hourly price moves for each pair, "
-                           "not fixed assumptions. London/New York shift 1 hour during their daylight saving periods.")
-
-        with tab6:
-            if not daily_reports:
-                st.info("No setup scores available -- run the analysis above first.")
-            else:
-                grade_rows = []
-                for pair, r in daily_reports.items():
-                    grade_rows.append({
-                        "Pair": pair, "Grade": r["SetupGrade"]["Grade"],
-                        "Points": f"{r['SetupGrade']['Points']}/{r['SetupGrade']['MaxPoints']}",
-                        "Alignment": r["Alignment"]["Alignment"],
-                    })
-                grade_df = pd.DataFrame(grade_rows).sort_values("Points", ascending=False)
-                st.dataframe(grade_df, use_container_width=True)
-
-                pick2 = st.selectbox("See why a pair got its grade", list(daily_reports.keys()), key="grade_explain_pick")
-                st.markdown(f"**{pick2}: {daily_reports[pick2]['SetupGrade']['Grade']}**")
-                for line in daily_reports[pick2]["SetupGrade"]["Breakdown"]:
-                    st.write(f"- {line}")
     else:
         st.info("Review the fundamental table above, then click **Run analysis**.")
 
@@ -352,7 +232,7 @@ with nav_screening:
 with nav_journal:
     if journal_db is None:
         st.warning(f"Trade journal not connected: {journal_status}")
-        st.caption("Enter your Supabase URL and key in the sidebar (section 5), or set them up as "
+        st.caption("Enter your Supabase URL and key in the sidebar (section 4), or set them up as "
                    "permanent secrets -- see the README.")
     else:
         st.success(f"Connected to trade journal database ({journal_status})")
