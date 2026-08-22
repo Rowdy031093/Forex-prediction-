@@ -22,7 +22,7 @@ INDICES = {
 
 METALS = {
     "Gold": "XAUUSD=X",
-    "Silver": "XAGUSD=X",
+    "Silver": "SI=F",
     "Copper": "HG=F",
     "Platinum": "PL=F",
 }
