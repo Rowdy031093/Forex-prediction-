@@ -22,10 +22,11 @@ import streamlit as st
 
 from fundamental import load_fundamental_data, compute_currency_strength, WEIGHTS
 from technical import compute_technical_signals
-from data_feed import get_ohlc, generate_synthetic_ohlc
+from data_feed import get_ohlc, get_ohlc_by_ticker, generate_synthetic_ohlc
 from engine import default_pairs
 from db_config import get_journal_db
 from performance import compute_dashboard, daily_pl
+from instruments import INSTRUMENT_GROUPS, all_instruments, group_of
 import fred_fetch
 
 st.set_page_config(page_title="Forex Fundamental x Technical", layout="wide")
@@ -42,6 +43,8 @@ if "cal_month" not in st.session_state:
     st.session_state.cal_month = (today.year, today.month)
 if "cal_selected_day" not in st.session_state:
     st.session_state.cal_selected_day = None
+if "other_markets_results" not in st.session_state:
+    st.session_state.other_markets_results = None
 
 st.title("Forex: Fundamental x Technical Cross-Reference")
 st.caption("Screening tool for idea generation -- not a signal generator. "
@@ -95,8 +98,8 @@ with st.sidebar:
 # ------------------------------------------------------------------
 # TOP-LEVEL NAVIGATION
 # ------------------------------------------------------------------
-nav_screening, nav_journal, nav_calendar, nav_dashboard = st.tabs(
-    ["Market Screening", "Trade Journal", "Calendar", "Performance Dashboard"]
+nav_screening, nav_other_markets, nav_journal, nav_calendar, nav_dashboard = st.tabs(
+    ["Market Screening", "Other Markets", "Trade Journal", "Calendar", "Performance Dashboard"]
 )
 
 # ==================================================================
@@ -227,7 +230,78 @@ with nav_screening:
         st.info("Review the fundamental table above, then click **Run analysis**.")
 
 # ==================================================================
-# TAB 2: TRADE JOURNAL
+# TAB 2: OTHER MARKETS (indices, metals, crypto -- technical screening)
+# ==================================================================
+with nav_other_markets:
+    st.subheader("Indices, Metals & Crypto -- technical screening")
+    st.caption("These don't have interest rates/CPI/GDP the way a currency does, so there's no "
+               "fundamental-strength score here -- this is trend/momentum/structure only, using the "
+               "same technical engine as the forex screening. Not a trade recommendation.")
+
+    group_pick = st.multiselect("Asset classes", list(INSTRUMENT_GROUPS.keys()),
+                                 default=list(INSTRUMENT_GROUPS.keys()))
+    available_instruments = {name: ticker for name, ticker in all_instruments().items()
+                              if group_of(name) in group_pick}
+    instrument_pick = st.multiselect("Instruments", list(available_instruments.keys()),
+                                      default=list(available_instruments.keys()))
+
+    if st.button("Run technical screening", type="primary", key="run_other_markets"):
+        rows = []
+        progress = st.progress(0.0, text="Evaluating instruments...")
+        for i, name in enumerate(instrument_pick):
+            ticker = available_instruments[name]
+            try:
+                if use_synthetic:
+                    seed = abs(hash(ticker)) % (2**32)
+                    ohlc = generate_synthetic_ohlc(n=220, seed=seed)
+                else:
+                    ohlc = get_ohlc_by_ticker(ticker, period=period, interval=interval)
+                tech = compute_technical_signals(ohlc)
+            except Exception as e:
+                st.warning(f"Skipping {name} ({ticker}): {e}")
+                continue
+
+            rows.append({
+                "Instrument": name, "Group": group_of(name), "Ticker": ticker,
+                "TechnicalScore": tech["TechnicalScore"],
+                "Structure": tech["Structure"],
+                "TrendScore": tech["TrendScore"],
+                "MomentumScore": tech["MomentumScore"],
+                "RSI14": tech["RSI14"],
+                "LastClose": tech["LastClose"],
+            })
+            progress.progress((i + 1) / max(len(instrument_pick), 1), text=f"Evaluated {name}")
+        progress.empty()
+
+        st.session_state.other_markets_results = (
+            pd.DataFrame(rows).sort_values("TechnicalScore", key=abs, ascending=False).reset_index(drop=True)
+            if rows else pd.DataFrame()
+        )
+
+    if st.session_state.other_markets_results is not None:
+        results_df = st.session_state.other_markets_results
+        if results_df.empty:
+            st.info("No instruments were evaluated -- check your selections above.")
+        else:
+            tab_a, tab_b = st.tabs(["All Results", "Clearest Technical Setups"])
+            with tab_a:
+                st.dataframe(results_df, use_container_width=True)
+                st.download_button("Download results (CSV)",
+                                    results_df.to_csv(index=False).encode(), "other_markets_screening.csv")
+            with tab_b:
+                top = results_df.head(5)
+                for _, r in top.iterrows():
+                    direction = "Bullish" if r["TechnicalScore"] > 0 else "Bearish"
+                    st.metric(
+                        label=f"{r['Instrument']} ({r['Group']}) -- {direction}",
+                        value=f"Technical score {r['TechnicalScore']:.2f}",
+                        delta=f"structure: {r['Structure']}",
+                    )
+    else:
+        st.info("Pick your instruments above, then click **Run technical screening**.")
+
+# ==================================================================
+# TAB 3: TRADE JOURNAL
 # ==================================================================
 with nav_journal:
     if journal_db is None:
@@ -325,7 +399,7 @@ with nav_journal:
             st.error(f"Could not load trades: {e}")
 
 # ==================================================================
-# TAB 3: CALENDAR
+# TAB 4: CALENDAR
 # ==================================================================
 with nav_calendar:
     if journal_db is None:
@@ -411,7 +485,7 @@ with nav_calendar:
             st.caption("Tap 'view' under any day to see that day's trades.")
 
 # ==================================================================
-# TAB 4: PERFORMANCE DASHBOARD
+# TAB 5: PERFORMANCE DASHBOARD
 # ==================================================================
 with nav_dashboard:
     if journal_db is None:

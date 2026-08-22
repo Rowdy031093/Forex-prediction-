@@ -20,20 +20,26 @@ def get_ohlc(pair: str, period: str = "6mo", interval: str = "1d") -> pd.DataFra
     period: yfinance lookback window, e.g. '3mo', '6mo', '1y'
     interval: '1d', '4h' (via '1h' resample), '1h', etc.
     """
+    return get_ohlc_by_ticker(f"{pair}=X", period=period, interval=interval)
+
+
+def get_ohlc_by_ticker(ticker: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
+    """
+    Like get_ohlc(), but takes a yfinance ticker directly rather than
+    converting a forex pair to the '<PAIR>=X' format. Use this for
+    indices (^GSPC), crypto (BTC-USD), and metals tickers that already
+    include their own suffix (XAUUSD=X, GC=F) -- see instruments.py.
+    """
     try:
         import yfinance as yf
     except ImportError as e:
         raise ImportError(
-            "yfinance is not installed. Run: pip install yfinance\n"
-            "Or replace data_feed.get_ohlc() with your own broker/data API call, "
-            "keeping the same return shape (DataFrame indexed by datetime with "
-            "Open/High/Low/Close columns)."
+            "yfinance is not installed. Run: pip install yfinance"
         ) from e
 
-    ticker = f"{pair}=X"
     df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
     if df.empty:
-        raise ValueError(f"No data returned for {pair} ({ticker}). Check the symbol/period/interval.")
+        raise ValueError(f"No data returned for ticker {ticker}. Check the symbol/period/interval.")
 
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
@@ -43,12 +49,13 @@ def get_ohlc(pair: str, period: str = "6mo", interval: str = "1d") -> pd.DataFra
 
 
 def generate_synthetic_ohlc(n: int = 180, seed: int = None, drift: float = 0.0002,
-                             vol: float = 0.006) -> pd.DataFrame:
+                             vol: float = 0.006, freq: str = "D") -> pd.DataFrame:
     """
     Generates synthetic OHLC data for testing the pipeline offline (no
     network required). Not for real analysis -- only used to validate
     that the technical engine and cross-reference logic run correctly
     end-to-end before you point it at live data.
+    freq: pandas frequency string, e.g. 'D' (daily) or 'H' (hourly).
     """
     import numpy as np
     rng = np.random.default_rng(seed)
@@ -60,5 +67,5 @@ def generate_synthetic_ohlc(n: int = 180, seed: int = None, drift: float = 0.000
     open_ = np.roll(close, 1)
     open_[0] = close[0]
 
-    idx = pd.date_range(end=pd.Timestamp.today(), periods=n, freq="D")
+    idx = pd.date_range(end=pd.Timestamp.today(), periods=n, freq=freq)
     return pd.DataFrame({"Open": open_, "High": high, "Low": low, "Close": close}, index=idx)
